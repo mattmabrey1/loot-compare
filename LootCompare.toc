@@ -1,0 +1,7 @@
+## Interface: 90005
+## Title: Loot Compare
+## Author: Matthew Mabrey
+## OptDevs: BugSack
+## Version: 1
+
+main.lua
