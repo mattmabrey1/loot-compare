@@ -14,6 +14,8 @@ local cachedInventories = {}
 local cachedUnitIDs = {}
 local inspectedPlayers = {}
 
+local lastUpdateTimeForPlayer = {}
+
 local PlayerLoginFrame = CreateFrame("Frame")
 PlayerLoginFrame:RegisterEvent("PLAYER_LOGIN")
 
@@ -23,41 +25,11 @@ InspectFrame:RegisterEvent("INSPECT_READY")
 local ChatLootFrame = CreateFrame("Frame")
 ChatLootFrame:RegisterEvent("CHAT_MSG_LOOT")
 
-local GroupChangeFrame = CreateFrame("Frame")
-GroupChangeFrame:RegisterEvent("GROUP_ROSTER_UPDATE")
+local PartyChangeFrame = CreateFrame("Frame")
+PartyChangeFrame:RegisterEvent("PARTY_MEMBERS_CHANGED")
 
 local UpdateFrame = CreateFrame("Frame")
 
-
--- Globals Section
-LootCompare = {}
-
-itemIDs = {
-    INVTYPE_HEAD = {1},
-    INVTYPE_NECK = {2},
-    INVTYPE_SHOULDER = {3},
-    INVTYPE_CHEST = {5},
-    INVTYPE_ROBE = {5},
-    INVTYPE_WAIST = {6},
-    INVTYPE_LEGS = {7},
-    INVTYPE_FEET = {8},
-    INVTYPE_WRIST = {9},
-    INVTYPE_HAND = {10},
-    INVTYPE_FINGER = {11, 12},
-    INVTYPE_TRINKET = {13, 14},
-    INVTYPE_CLOAK = {15},
-    INVTYPE_WEAPON = {16, 17},
-    INVTYPE_SHIELD = {16, 17},
-    INVTYPE_2HWEAPON = {16, 17},
-    INVTYPE_WEAPONMAINHAND = {16, 17},
-    INVTYPE_WEAPONOFFHAND = {16, 17},
-    INVTYPE_HOLDABLE = {16, 17},
-    INVTYPE_RANGED = {18},
-    INVTYPE_THROWN = {18},
-    INVTYPE_RANGEDRIGHT = {18},
-    INVTYPE_RELIC = {18},
-    ['?'] = nil 
-}
 
 local LootCompare_UpdateInterval = 5.0; -- How often the OnUpdate code will run (in seconds)
 local LootCompare_ResetCacheInterval = 180.0; -- How often the OnUpdate code will run (in seconds)
@@ -69,157 +41,187 @@ cachedUnitIDs[UnitGUID("player")] = "player"
 
 -- Functions Section
 
-function LootCompare:CacheInventory(GUID)
+function LootCompare:TryCacheInventory(GUID)
 
     local UnitID = cachedUnitIDs[GUID]
 
-    if UnitID ~= nil and inspectedPlayers[GUID] == nil then
+    if UnitID == nil then
+        print("No cached unit ID found for GUID " .. GUID.. ".")
+        return;
+    end
 
-        local unitInventory = {}
+    local lastInventoryUpdateTime = lastUpdateTimeForPlayer[GUID];
+ 
+    if lastInventoryUpdateTime == nil or (GetTime() - lastInventoryUpdateTime) > LootCompare.UpdateIntervalSec then
 
-        print(UnitName(UnitID) .. " (".. UnitID .. ") inventory cached")
-
-        for i = 1, 18 do
-            unitInventory[i] = GetInventoryItemLink(UnitID, i)
+        if cachedInventories[GUID] == nil then
+            cachedInventories[GUID] = {}
         end
 
-        cachedInventories[GUID] = unitInventory
-        inspectedPlayers[GUID] = true
+        local playerInventory = cachedInventories[GUID]
+
+        for i = 1, 18 do
+            playerInventory[i] = GetInventoryItemLink(UnitID, i)
+        end
+
+        lastUpdateTimeForPlayer[GUID] = GetTime()
+        
+        print(UnitName(UnitID) .. " (".. UnitID .. ") inventory cached.")
     end
 end
 
-UpdateFrame:HookScript("OnUpdate", function(self, elapsed)
-
-    if IsInGroup() and IsInRaid() == false then
-
-        TimeSinceLastUpdate = TimeSinceLastUpdate + elapsed; 	
-
-        if allPlayersInspected then
-            
-            if (TimeSinceLastUpdate > LootCompare_ResetCacheInterval) then
-                
-                print("*LootCompare* Inventory Caches expired, reloading all inventories!")
-                TimeSinceLastUpdate = 0
-
-                -- Do garbage collection for any past party members cached inventories
-                for GUID, inventory in pairs(cachedInventories) do
-            
-                    if inspectedPlayers[GUID] == nil then
-                        cachedInventories[GUID] = nil
-                        cachedUnitIDs[GUID] = nil
-                    end
-            
-                end
-
-                inspectedPlayers = {}
-
-                allPlayersInspected = false
-            end
-
-        elseif (TimeSinceLastUpdate > LootCompare_UpdateInterval) then
-
-            TimeSinceLastUpdate = 0
-            local inspectsSent = 0
-
-            local members = GetNumGroupMembers() - 1
-            local GUID = ""
-            local UID = ""
-            
-            if inspectedPlayers[UnitGUID("player")] == nil then
-                LootCompare:CacheInventory(UnitGUID("player"))
-            end
-
-            for N = 1, members do 
-        
-                UID = "party" .. N
-                GUID = UnitGUID(UID)
-
-                cachedUnitIDs[GUID] = UID
-
-                -- !!!!! ADD RANGE CHECK - "and CheckInteractDistance(UID, 1)"
-                if inspectsSent < 1 and UnitIsConnected(UID) and inspectedPlayers[GUID] == nil then
-
-                    inspectsSent = inspectsSent + 1
-                    print("*LootCompare* Inspect sent for ".. UID .. "!")
-                    NotifyInspect(UID)
-
-                end
-            end
+function LootCompare:TryInspect(GUID)
     
-            if inspectsSent == 0 then
-                allPlayersInspected = true
-            end
+    local UnitID = cachedUnitIDs[GUID]
+
+    if UnitID == nil then
+        print("No cached unit ID found for GUID " .. GUID.. ".")
+        return;
+    end
+
+    if ~UnitIsConnected(UnitID) then
+        print("*LootCompare* Cannot inspect player ".. GUID .. " since they're not connected!")
+        return;
+    end
+
+    -- If the last inspect request failed don't try the same guid
+    if LootCompare.GuidForOutstandingInspectRequest == GUID then
+        return false;
+    end
+    
+    local lastInventoryUpdateTime = lastUpdateTimeForPlayer[GUID];
+ 
+    if lastInventoryUpdateTime ~= nil and (GetTime() - lastInventoryUpdateTime) < LootCompare.CacheInventoryThrottleSec then
+        return false;
+    end
+    
+    -- !!!!! ADD RANGE CHECK - "and CheckInteractDistance(UID, 1)"
+    print("*LootCompare* Sending inspect for ".. UnitID .. "!")
+    LootCompare.GuidForOutstandingInspectRequest = GUID
+    NotifyInspect(UnitID)
+
+    return true;
+end
+
+UpdateFrame:HookScript("OnUpdate", function(_, elapsed)
+
+    if not LootCompare.IsInParty() then
+        return;
+    end
+    
+    LootCompare.TimeSinceLastInspect = LootCompare.TimeSinceLastInspect + elapsed; 	
+
+    -- Inspect requests take time so we need to throttle while we wait for one to complete
+    if LootCompare.GuidForOutstandingInspectRequest ~= nil and LootCompare.TimeSinceLastInspect < LootCompare.InspectThrottleSec then
+        return;
+    end
+    
+    if inspectedPlayers[UnitGUID("player")] == nil then
+        LootCompare:TryCacheInventory(UnitGUID("player"))
+    end
+
+    for GUID, _ in cachedUnitIDs do
+        if LootCompare.TryInspect(GUID) then
+            return
         end
+    end
+end)
+
+InspectFrame:SetScript("OnEvent", function(_, _, ...)
+    
+    if LootCompare.IsInParty() then 
+        local GUID = ...;
+
+        LootCompare:TryCacheInventory(GUID)
     end
 
 end)
 
-InspectFrame:SetScript("OnEvent", function(self, event, ...)
+PartyChangeFrame:SetScript("OnEvent", function(_, _, ...)
     
-    if IsInGroup() and IsInRaid() == false then 
-        local GUID = ...;
+    local members = GetNumGroupMembers() - 1
+    local GUID = ""
+    local UID = ""
 
-        LootCompare:CacheInventory(GUID)
+    for N = 1, members do
+
+        UID = "party" .. N
+        GUID = UnitGUID(UID)
+
+        if GUID ~= nil then
+            cachedUnitIDs[GUID] = UID
+        else
+            print("*LootCompare* Failed to get GUID for unit " .. UID.. ".")
+        end
     end
-
 end)
 
 -- When an item is looted by a player and it is displayed in chat check if it's an upgrade for them
 ChatLootFrame:SetScript("OnEvent", function(self, event, ...)
 
-    if IsInGroup() and IsInRaid() == false then 
+    if LootCompare.IsInParty() == false then
+        return;
+    end
 
-        local itemLink, playerName = ...
-    
-        local looterName = playerName;
+    local lootedItemLink, looterName = ...;
 
-        local s, e = string.find(looterName, '-', 1, true)
-        looterName = strsub(looterName, 1, s - 1)
+    local s, _ = string.find(looterName, '-', 1, true)
+    looterName = strsub(looterName, 1, s - 1)
+    local looterGUID = UnitGUID(looterName);
 
-        local lootedItemName, lootedItemLink, lootedItemRarity, lootedItemLevel, lootedItemMinLevel, lootedItemType,
-        lootedItemSubType, lootedItemStackCount, lootedItemEquipLoc, lootedItemTexture, lootedItemSellPrice = GetItemInfo(itemLink)
+    if looterGUID ~= nil then
+        print("*LootCompare* Failed to get the GUID for looter " .. looterName .. "!")
+        return;
+    end
 
-        -- Translate item equip location name to possible Slot IDs
-        local slotIDs = itemIDs[lootedItemEquipLoc]
-
-        looterGUID = UnitGUID(looterName)
-
-        -- Check if the looted item is an upgrade item if it has slotIDs (is an equippable item)
-        if slotIDs ~= nil and looterGUID ~= nil then
-
-            if cachedInventories[looterGUID] == nil then 
-
-                print("*LootCompare* No cached inventory for the player that just looted an item!")
-
-            else
-
-                local isUpgrade = true
-
-                for i = 1, table.getn(slotIDs) do
-                    local slotID = slotIDs[i]
-
-                    local itemName, itemLink, itemRarity, itemLevel, itemMinLevel, itemType,
-                    itemSubType, itemStackCount, itemEquipLoc, itemTexture, itemSellPrice = GetItemInfo(cachedInventories[looterGUID][slotID])
-
-                    if itemLevel >= lootedItemLevel then
-                        isUpgrade = false
-                    end
-                end
-            
-                
-                if isUpgrade == false then
-                    LootCompare:CheckForUpgrades(looterName, looterGUID, lootedItemLink, lootedItemLevel, lootedItemSubType, slotIDs)
-                else 
-                    print("*LootCompare* " .. lootedItemLink .. " was an upgrade so no comparison will take place.")
-                end
-
-            end
-        end
+    if LootCompare.IsUpgrade(looterGUID, lootedItemLink) then
+        print("*LootCompare* " .. lootedItemLink .. " was an upgrade for the looter so no comparison will take place.")
+    else
+        LootCompare:CheckForUpgrades(looterGUID, lootedItemLink)
     end
 
 end)
 
-function LootCompare:CheckForUpgrades(looterName, looterGUID, lootedItemLink, lootedItemLevel, lootedItemSubType, slotIDs)
+function LootCompare:GetItemSlotForPlayer(playerGuid, itemSlotId)
+
+    local playerInventory = cachedInventories[playerGuid];
+
+    if playerInventory == nil then
+        local playerName = UnitName(cachedUnitIDs[playerGuid])
+        print("*LootCompare* Cannot get item slot {".. itemSlotId .. "} for " .. playerName .. " since their inventory wasn't cached!")
+        return nil
+    end
+
+    local item = playerInventory[itemSlotId];
+
+    if item == nil then
+        local playerName = UnitName(cachedUnitIDs[playerGuid])
+        print("*LootCompare* Undefined {".. itemSlotId .. "} slot for " .. playerName .. " inventory cache!")
+        return nil
+    end
+
+    return item;
+end
+
+function LootCompare:IsUpgrade(playerGuid, lootedItemLink)
+    local _, _, _, lootedItemLevel, _, _, lootedItemSubType, _, lootedItemSlotName = GetItemInfo(lootedItemLink)
+
+    -- Translate item slot name to the item slot IDs
+    local possibleItemSlots = LootCompare.ItemSlotNameToIdsMap[lootedItemSlotName]
+
+    for index, itemSlot in pairs(possibleItemSlots) do
+        local equippedItem = LootCompare.GetItemSlotForPlayer(playerGuid, itemSlot)
+        local _, _, _, equippedItemLevel, _, _, equippedItemSubType = GetItemInfo(equippedItem);
+
+        if lootedItemLevel > equippedItemLevel and lootedItemSubType == equippedItemSubType then
+            return true;
+        end
+    end
+
+    return false;
+end
+
+function LootCompare:CheckForUpgrades(looterName, looterGUID, lootedItemLink)
 
     local slotID = 0
 
@@ -229,39 +231,16 @@ function LootCompare:CheckForUpgrades(looterName, looterGUID, lootedItemLink, lo
 
     local cacheSize = 0
 
-    for GUID, inventory in pairs(cachedInventories) do
+    for playerGuid, inventory in pairs(cachedInventories) do
 
-        if GUID ~= looterGUID then
+        if playerGuid == looterGUID then
+            continue;
+        end
 
-            cacheSize = cacheSize + 1
+        cacheSize = cacheSize + 1
 
-            for s = 1, table.getn(slotIDs) do
-
-                slotID = slotIDs[s]
-
-                local playerName = UnitName(cachedUnitIDs[GUID])
-
-                if inventory[slotID] ~= nil then
-
-                    local itemName, itemLink, itemRarity, itemLevel, itemMinLevel, itemType,
-                    itemSubType, itemStackCount, itemEquipLoc, itemTexture, itemSellPrice = GetItemInfo(inventory[slotID])
-
-                    -- lootedItemLevel > itemLevel 
-                    
-                    if lootedItemLevel > itemLevel and lootedItemSubType == itemSubType then
-
-                        if upgradeFor[playerName] == nil then
-                            upgradeFor[playerName] = {}
-                        end
-                        
-                        tinsert(upgradeFor[playerName], itemLink)
-                        upgradeExists = true
-                    end
-                else
-                    print("*LootCompare* Undefined {".. slotID .. "} slot for " .. playerName .. " inventory cache!")
-                end
-
-            end
+        if LootCompare.IsUpgrade(playerGuid, lootedItemLink) then
+            tinsert(upgradeFor[playerName], itemLink)
         end
     end
 
@@ -284,7 +263,6 @@ function LootCompare:CheckForUpgrades(looterName, looterGUID, lootedItemLink, lo
         end
 
         SendChatMessage(playersItems, "PARTY", nil, nil)
-        
     end
 
     
