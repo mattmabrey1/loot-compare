@@ -1,7 +1,8 @@
-## Interface: 90005
+## Interface: 100002
+
 ## Title: Loot Compare
-## Author: Matthew Mabrey
-## OptDevs: BugSack
-## Version: 1
+## Notes: Compares dungeon loot to party member's equipped items and announces whether an item is an upgrade for any party members.
+## Author: mattmabrey1 (Matthew Mabrey)
+## Version: @project-version@
 
 main.lua
