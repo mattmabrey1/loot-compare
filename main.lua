@@ -10,58 +10,36 @@
 
 -- https://wowwiki.fandom.com/wiki/API_GetInventoryItemLink
 
-local cachedInventories = {}
-local cachedUnitIDs = {}
-local inspectedPlayers = {}
-
 local lastUpdateTimeForPlayer = {}
 
-local PlayerLoginFrame = CreateFrame("Frame")
-PlayerLoginFrame:RegisterEvent("PLAYER_LOGIN")
-
-local InspectFrame = CreateFrame("Frame")
-InspectFrame:RegisterEvent("INSPECT_READY")
-
-local ChatLootFrame = CreateFrame("Frame")
-ChatLootFrame:RegisterEvent("CHAT_MSG_LOOT")
-
-local PartyChangeFrame = CreateFrame("Frame")
-PartyChangeFrame:RegisterEvent("PARTY_MEMBERS_CHANGED")
-
-local UpdateFrame = CreateFrame("Frame")
-
-
-local LootCompare_UpdateInterval = 5.0; -- How often the OnUpdate code will run (in seconds)
-local LootCompare_ResetCacheInterval = 180.0; -- How often the OnUpdate code will run (in seconds)
-local TimeSinceLastUpdate = 0
-
-local allPlayersInspected = false
-
-cachedUnitIDs[UnitGUID("player")] = "player"
-
 -- Functions Section
+function LootCompare.GetUnitId(GUID)
+
+    if LootCompare.CachedUnitIDs[GUID] == nil then
+        print("No cached unit ID found for GUID " .. GUID.. ".")
+        return nil;
+    end
+
+    return LootCompare.CachedUnitIDs[GUID];
+end
 
 function LootCompare:TryCacheInventory(GUID)
-
-    local UnitID = cachedUnitIDs[GUID]
-
-    if UnitID == nil then
-        print("No cached unit ID found for GUID " .. GUID.. ".")
-        return;
-    end
 
     local lastInventoryUpdateTime = lastUpdateTimeForPlayer[GUID];
  
     if lastInventoryUpdateTime == nil or (GetTime() - lastInventoryUpdateTime) > LootCompare.UpdateIntervalSec then
 
-        if cachedInventories[GUID] == nil then
-            cachedInventories[GUID] = {}
+        if LootCompare.CachedInventories[GUID] == nil then
+            LootCompare.CachedInventories[GUID] = {}
+        end
+        
+        local UnitID = LootCompare.GetUnitId(GUID);
+        if UnitID == nil then
+            return;
         end
 
-        local playerInventory = cachedInventories[GUID]
-
         for i = 1, 18 do
-            playerInventory[i] = GetInventoryItemLink(UnitID, i)
+            LootCompare.CachedInventories[GUID][i] = GetInventoryItemLink(UnitID, i)
         end
 
         lastUpdateTimeForPlayer[GUID] = GetTime()
@@ -70,16 +48,41 @@ function LootCompare:TryCacheInventory(GUID)
     end
 end
 
+
+function LootCompare:TryCachePartyInventories()
+    if not LootCompare.IsInParty() then
+        return;
+    end
+    
+    LootCompare.TimeSinceLastInspect = LootCompare.TimeSinceLastInspect + elapsed; 	
+
+    -- Inspect requests take time so we need to throttle while we wait for one to complete
+    if LootCompare.GuidForOutstandingInspectRequest ~= nil and LootCompare.TimeSinceLastInspect < LootCompare.InspectThrottleSec then
+        return;
+    end
+    
+    LootCompare.TryCacheInventory(LootCompare.PlayerGuid)
+
+    for GUID, _ in LootCompare.CachedUnitIDs do
+
+        -- only try inspecting one player at a time
+        if LootCompare.TryInspect(GUID) then
+            LootCompare.TimeSinceLastInspect = 0
+            return
+        end
+    end
+end
+
 function LootCompare:TryInspect(GUID)
     
-    local UnitID = cachedUnitIDs[GUID]
+    local UnitID = LootCompare.CachedUnitIDs[GUID]
 
     if UnitID == nil then
         print("No cached unit ID found for GUID " .. GUID.. ".")
         return;
     end
 
-    if ~UnitIsConnected(UnitID) then
+    if not UnitIsConnected(UnitID) then
         print("*LootCompare* Cannot inspect player ".. GUID .. " since they're not connected!")
         return;
     end
@@ -103,45 +106,10 @@ function LootCompare:TryInspect(GUID)
     return true;
 end
 
-UpdateFrame:HookScript("OnUpdate", function(_, elapsed)
-
-    if not LootCompare.IsInParty() then
-        return;
-    end
-    
-    LootCompare.TimeSinceLastInspect = LootCompare.TimeSinceLastInspect + elapsed; 	
-
-    -- Inspect requests take time so we need to throttle while we wait for one to complete
-    if LootCompare.GuidForOutstandingInspectRequest ~= nil and LootCompare.TimeSinceLastInspect < LootCompare.InspectThrottleSec then
-        return;
-    end
-    
-    if inspectedPlayers[UnitGUID("player")] == nil then
-        LootCompare:TryCacheInventory(UnitGUID("player"))
-    end
-
-    for GUID, _ in cachedUnitIDs do
-        if LootCompare.TryInspect(GUID) then
-            return
-        end
-    end
-end)
-
-InspectFrame:SetScript("OnEvent", function(_, _, ...)
-    
-    if LootCompare.IsInParty() then 
-        local GUID = ...;
-
-        LootCompare:TryCacheInventory(GUID)
-    end
-
-end)
-
-PartyChangeFrame:SetScript("OnEvent", function(_, _, ...)
-    
+function LootCompare:CachePartyGuids()
     local members = GetNumGroupMembers() - 1
-    local GUID = ""
-    local UID = ""
+    local GUID = nil
+    local UID = nil
 
     for N = 1, members do
 
@@ -149,21 +117,18 @@ PartyChangeFrame:SetScript("OnEvent", function(_, _, ...)
         GUID = UnitGUID(UID)
 
         if GUID ~= nil then
-            cachedUnitIDs[GUID] = UID
+            LootCompare.CachedUnitIDs[GUID] = UID
         else
             print("*LootCompare* Failed to get GUID for unit " .. UID.. ".")
         end
     end
-end)
+end
 
--- When an item is looted by a player and it is displayed in chat check if it's an upgrade for them
-ChatLootFrame:SetScript("OnEvent", function(self, event, ...)
+function LootCompare:CompareLoot(lootedItemLink, looterName)
 
     if LootCompare.IsInParty() == false then
         return;
     end
-
-    local lootedItemLink, looterName = ...;
 
     local s, _ = string.find(looterName, '-', 1, true)
     looterName = strsub(looterName, 1, s - 1)
@@ -179,15 +144,14 @@ ChatLootFrame:SetScript("OnEvent", function(self, event, ...)
     else
         LootCompare:CheckForUpgrades(looterGUID, lootedItemLink)
     end
-
-end)
+end
 
 function LootCompare:GetItemSlotForPlayer(playerGuid, itemSlotId)
 
-    local playerInventory = cachedInventories[playerGuid];
+    local playerInventory = LootCompare.CachedInventories[playerGuid];
 
     if playerInventory == nil then
-        local playerName = UnitName(cachedUnitIDs[playerGuid])
+        local playerName = UnitName(LootCompare.CachedUnitIDs[playerGuid])
         print("*LootCompare* Cannot get item slot {".. itemSlotId .. "} for " .. playerName .. " since their inventory wasn't cached!")
         return nil
     end
@@ -195,7 +159,7 @@ function LootCompare:GetItemSlotForPlayer(playerGuid, itemSlotId)
     local item = playerInventory[itemSlotId];
 
     if item == nil then
-        local playerName = UnitName(cachedUnitIDs[playerGuid])
+        local playerName = UnitName(LootCompare.CachedUnitIDs[playerGuid])
         print("*LootCompare* Undefined {".. itemSlotId .. "} slot for " .. playerName .. " inventory cache!")
         return nil
     end
@@ -208,6 +172,11 @@ function LootCompare:IsUpgrade(playerGuid, lootedItemLink)
 
     -- Translate item slot name to the item slot IDs
     local possibleItemSlots = LootCompare.ItemSlotNameToIdsMap[lootedItemSlotName]
+
+    if possibleItemSlots == nil then
+        print("*LootCompare* couldn't find item slots for item slot name " .. lootedItemSlotName .. ".")
+        return false;
+    end
 
     for index, itemSlot in pairs(possibleItemSlots) do
         local equippedItem = LootCompare.GetItemSlotForPlayer(playerGuid, itemSlot)
@@ -223,15 +192,13 @@ end
 
 function LootCompare:CheckForUpgrades(looterName, looterGUID, lootedItemLink)
 
-    local slotID = 0
-
     local upgradeExists = false
 
     local upgradeFor = {}
 
     local cacheSize = 0
 
-    for playerGuid, inventory in pairs(cachedInventories) do
+    for playerGuid, inventory in pairs(LootCompare.CachedInventories) do
 
         if playerGuid == looterGUID then
             continue;
@@ -244,7 +211,7 @@ function LootCompare:CheckForUpgrades(looterName, looterGUID, lootedItemLink)
         end
     end
 
-    if cacheSize < GetNumGroupMembers() - 1 then
+    if table.getn(LootCompare.CachedInventories) < GetNumGroupMembers() - 1 then
         print("*LootCompare* A party members inventory was not found in cache when trying to compare items! Cache size: " .. cacheSize .. "   Party Size: " .. GetNumGroupMembers())
     end
 
@@ -267,25 +234,3 @@ function LootCompare:CheckForUpgrades(looterName, looterGUID, lootedItemLink)
 
     
 end
-
-
---local lootFrame = CreateFrame("Frame", "DragFrame2", UIParent)
---lootFrame:SetMovable(true)
---lootFrame:EnableMouse(true)
---lootFrame:RegisterForDrag("LeftButton")
---lootFrame:SetScript("OnDragStart", lootFrame.StartMoving)
---lootFrame:SetScript("OnDragStop", lootFrame.StopMovingOrSizing)
-
--- The code below makes the frame visible, and is not necessary to enable dragging.
---lootFrame:SetPoint("CENTER")
---lootFrame:SetWidth(256)
---lootFrame:SetHeight(76)
-
---local tex = lootFrame:CreateTexture(nil,"BACKGROUND")
---tex:SetTexture("BlizzardInterfaceArt\\Interface\\LootFrame\\LootToast.BLP")
---tex:SetTexCoord(0, 0.5, 0, 1);
---tex:SetTexCoord(0.28975, 0.54341, 0.607, 0.91828);
---tex:SetAllPoints(lootFrame)
---lootFrame.texture = tex
---lootFrame:SetPoint("CENTER",0,0)
---lootFrame:Show()
