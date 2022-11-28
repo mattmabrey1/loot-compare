@@ -6,3 +6,5 @@
 ## Version: @project-version@
 
 main.lua
+events.lua
+Core.lua

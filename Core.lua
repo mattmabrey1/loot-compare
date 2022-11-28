@@ -44,9 +44,9 @@ local allPlayersInspected = false
 LootCompare.PlayerGuid = UnitGUID("player");
 
 LootCompare.CachedInventories = {}
-LootCompare.CachedUnitIDs = {}
+LootCompare.GuidToUnitIdMap = {}
 
-LootCompare.CachedUnitIDs[LootCompare.PlayerGuid] = "player"
+LootCompare.GuidToUnitIdMap[LootCompare.PlayerGuid] = "player"
 
 function LootCompare.IsInParty()
     return IsInGroup() and IsInRaid() == false;
