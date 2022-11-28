@@ -5,6 +5,4 @@
 ## Author: mattmabrey1 (Matthew Mabrey)
 ## Version: @project-version@
 
-main.lua
-events.lua
 Core.lua

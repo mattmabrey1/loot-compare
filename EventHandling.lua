@@ -13,20 +13,42 @@ PartyChangeFrame:RegisterEvent("GROUP_ROSTER_UPDATE")
 local UpdateFrame = CreateFrame("Frame")
 
 UpdateFrame:HookScript("OnUpdate", function(_, elapsed)
+    
+    if LootCompare:IsInParty() == false then
+        return;
+    end
+
+    LootCompare.TimeSinceLastInspect = LootCompare.TimeSinceLastInspect + elapsed;
+
     LootCompare:TryCachePartyInventories()
 end)
 
 InspectFrame:SetScript("OnEvent", function(_, _, ...)
+
+    if LootCompare:IsInParty() == false then
+        return;
+    end
+
     local GUID = ...;
     LootCompare:TryCacheInventory(GUID)
 end)
 
 PartyChangeFrame:SetScript("OnEvent", function(_, _, ...)
+
+    if LootCompare:IsInParty() == false then
+        return;
+    end
+
     LootCompare:MapPartyMemberGuidsToUnitIds();
 end)
 
 -- When an item is looted by a player and it is displayed in chat check if it's an upgrade for them
 ChatLootFrame:SetScript("OnEvent", function(self, event, ...)
+
+    if LootCompare:IsInParty() == false then
+        return;
+    end
+
     local lootedItemLink, looterName = ...;
-    LootCompare:CompareLoot(lootedItemLink, looterName);
+    LootCompare:OnItemLooted(lootedItemLink, looterName);
 end)

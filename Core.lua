@@ -34,20 +34,20 @@ LootCompare.ItemSlotNameToIdsMap = {
     ['?'] = nil 
 }
 
-LootCompare.InspectThrottleSec = 10.0; -- The throttle for inspecting other player's inventories in seconds
-LootCompare.CacheInventoryThrottleSec = 180.0; -- The throttle for updating a player's cached inventory in seconds
+LootCompare.InspectWaitSec = 10.0; -- The throttle for inspecting other player's inventories in seconds
+LootCompare.InspectThrottleSec = 180.0; -- The throttle for updating a player's cached inventory in seconds
 LootCompare.TimeSinceLastInspect = 0;
 LootCompare.GuidForOutstandingInspectRequest = nil; -- The guid for the last player we tried inspecting
-
-local allPlayersInspected = false
 
 LootCompare.PlayerGuid = UnitGUID("player");
 
 LootCompare.CachedInventories = {}
 LootCompare.GuidToUnitIdMap = {}
+LootCompare.LastInspectTimeForPlayer = {}
 
 LootCompare.GuidToUnitIdMap[LootCompare.PlayerGuid] = "player"
 
 function LootCompare.IsInParty()
-    return IsInGroup() and IsInRaid() == false;
+    local inInstance, instanceType = IsInInstance();
+    return inInstance == true and instanceType == "party";
 end
